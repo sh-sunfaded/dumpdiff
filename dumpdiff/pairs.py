@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+from . import fastpath
 from .diffruns import classify_pages, diff_runs
 from .entropy import shannon_entropy
 
@@ -30,6 +31,9 @@ PRINTABLE_MIN = 0.55
 # zero 判定の 0x00 比率
 ZERO_MIN = 0.9
 
+# 印刷可能 ASCII(タブ/CR/LF を含む)— 純実装の translate 用
+_PRINTABLE_BYTES = bytes(range(0x20, 0x7f)) + b"\t\n\r"
+
 
 def code_density(data: bytes) -> float:
     """x86 風パターンの出現密度(256 バイトあたりのヒット数)。"""
@@ -41,10 +45,13 @@ def code_density(data: bytes) -> float:
 
 def printable_ratio(data: bytes) -> float:
     """印刷可能 ASCII の比率(タブ/CR/LF を含む)。"""
+    if fastpath.HAVE_NUMPY:
+        return fastpath.printable_ratio(data)
     if not data:
         return 0.0
-    n = sum(1 for b in data if 0x20 <= b <= 0x7e or b in (0x09, 0x0a, 0x0d))
-    return n / len(data)
+    # translate の delete で印刷可能バイトを削り、差分から数える
+    deleted = data.translate(None, _PRINTABLE_BYTES)
+    return (len(data) - len(deleted)) / len(data)
 
 
 def zero_ratio(data: bytes) -> float:
@@ -76,6 +83,11 @@ def page_class(data: bytes, cipher_entropy: float = 7.0) -> dict:
 
 
 def _classify_all(images, page, cipher_entropy):
+    if fastpath.HAVE_NUMPY:
+        return [fastpath.page_classifications(
+            img, page, cipher_entropy=cipher_entropy,
+            code_density_min=CODE_DENSITY_MIN, printable_min=PRINTABLE_MIN,
+            zero_min=ZERO_MIN, patterns=_CODE_PATTERNS) for img in images]
     out = []
     for img in images:
         pages = [page_class(img[o:o + page], cipher_entropy)

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import hashlib
 
+from . import fastpath
+
 DEFAULT_PAGE = 0x1000
 
 # ページ分類ラベル:
@@ -23,14 +25,28 @@ def diff_runs(a: bytes, b: bytes, merge_gap: int = 0, min_length: int = 1):
     merge_gap>0 のとき、gap バイト以内の一致区間で隔てられた diff ランを
     1本に併合する(併合後の長さにはスキップされた一致バイトを含む)。
     min_length 未満のランは除外する(併合後に適用)。
+
+    内部の 0x1000 バイトチャンク走査は高速化のためのもので、
+    ランをチャンク境界で分割しない(0x1000 境界を跨ぐ不一致は
+    1 本の連続ランとして返す)。
     """
+    if fastpath.HAVE_NUMPY:
+        runs = fastpath.diff_runs(a, b)
+    else:
+        runs = _diff_runs_pure(a, b)
+    runs = _merge(runs, merge_gap)
+    return [r for r in runs if r["length"] >= min_length]
+
+
+def _diff_runs_pure(a: bytes, b: bytes):
+    """diff ラン列挙の純実装(NumPy が無い環境で使われる)。"""
     runs: list[dict] = []
     n = min(len(a), len(b))
     off = 0
+    start = None
     while off < n:
         end = min(off + 0x1000, n)
         if a[off:end] != b[off:end]:
-            start = None
             for i in range(off, end):
                 if a[i] != b[i]:
                     if start is None:
@@ -39,16 +55,19 @@ def diff_runs(a: bytes, b: bytes, merge_gap: int = 0, min_length: int = 1):
                     runs.append({"offset": start, "length": i - start,
                                  "kind": "diff"})
                     start = None
-            if start is not None:
-                runs.append({"offset": start, "length": end - start,
-                             "kind": "diff"})
+        elif start is not None:
+            # チャンク全体が一致 → 開いているランはここで閉じる
+            runs.append({"offset": start, "length": off - start,
+                         "kind": "diff"})
+            start = None
         off = end
+    if start is not None:
+        runs.append({"offset": start, "length": n - start, "kind": "diff"})
     if len(a) > len(b):
         runs.append({"offset": n, "length": len(a) - n, "kind": "a-only"})
     elif len(b) > len(a):
         runs.append({"offset": n, "length": len(b) - n, "kind": "b-only"})
-    runs = _merge(runs, merge_gap)
-    return [r for r in runs if r["length"] >= min_length]
+    return runs
 
 
 def _merge(runs: list[dict], gap: int) -> list[dict]:
@@ -81,6 +100,8 @@ def classify_pages(images, page: int = DEFAULT_PAGE):
         raise ValueError("2つ以上のイメージが必要です")
     if len(images) > 3:
         raise ValueError("比較できるのは3イメージまでです(ラベル定義の制約)")
+    if fastpath.HAVE_NUMPY:
+        return fastpath.classify_pages(images, page)
     hashes = [_page_hashes(img, page) for img in images]
     npages = min(len(h) for h in hashes)
     out = []
