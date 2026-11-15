@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dumpdiff"
-version = "0.2.0"
+version = "0.3.0"
 description = "Compare multiple snapshots of a process memory dump: page entropy, diff runs, page classification (static/flip/settled/volatile), and cipher/plain pair estimation"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -16,6 +16,12 @@ classifiers = [
     "Topic :: Security",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
+
+[project.optional-dependencies]
+# NumPy は任意依存(標準ライブラリのみでも全機能が動作する)。
+# 導入するとホットパスが自動でベクトル化実装に切り替わる
+# (numpy>=1.26 は Python>=3.9 必須。コアは 3.8 のまま動く)。
+fast = ["numpy>=1.26"]
 
 [tool.setuptools]
 packages = ["dumpdiff"]

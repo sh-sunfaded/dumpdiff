@@ -2,6 +2,7 @@
 
 使い方: PYTHONPATH=. python3 tests/test_dumpdiff.py
 """
+import hashlib
 import io
 import os
 import random
@@ -14,17 +15,35 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dumpdiff import (classify_pages, diff_runs, entropy_map,
                       fingerprint, high_entropy_ranges, label_ranges,
                       load_image, shannon_entropy, strip_header, summarize)
+from dumpdiff import fastpath as _fp
+from dumpdiff.fastpath import HAVE_NUMPY
 from dumpdiff.pairs import (analyze_pairs, code_density, find_pairs,
                             page_class, printable_ratio, refine_with_diffs,
-                            descriptor_suggestion)
+                            descriptor_suggestion, _CODE_PATTERNS,
+                            CODE_DENSITY_MIN, PRINTABLE_MIN, ZERO_MIN)
 from dumpdiff.report import json_report, markdown_report
 
 RESULTS = []
+SKIPPED = []
+
+
+class SkipTest(Exception):
+    """NumPy 等の任意依存が無い環境で等価性テストをスキップする。"""
+
+
+def requires_numpy():
+    if not HAVE_NUMPY:
+        raise SkipTest("numpy not installed")
 
 
 def check(name, cond):
     RESULTS.append((name, bool(cond)))
     print(("PASS  " if cond else "FAIL  ") + name)
+
+
+def skip(name, reason):
+    SKIPPED.append(name)
+    print("SKIP  %s  (%s)" % (name, reason))
 
 
 def rnd(n, seed=0):
@@ -148,10 +167,12 @@ def test_diff_runs_page_boundary():
     a = bytearray(b"\x00" * 0x2000)
     b = bytearray(a)
     b[0xff0:0x1010] = b"\x33" * 0x20   # ページ境界を跨ぐ差分
-    runs = diff_runs(bytes(a), bytes(b), merge_gap=1)
+    runs = diff_runs(bytes(a), bytes(b))
     check("test_diff_runs_page_boundary",
           len(runs) == 1 and runs[0]["offset"] == 0xff0
           and runs[0]["length"] == 0x20)
+    runs2 = diff_runs(bytes(a), bytes(b), merge_gap=1)
+    check("test_diff_runs_page_boundary_merge", runs2 == runs)
 
 
 def test_classify_pages_three():
@@ -384,6 +405,236 @@ def test_cli_smoke():
               rc == 0 and os.path.exists(os.path.join(td, "r.md")))
 
 
+# ============================================================ fastpath(NumPy)
+# NumPy が導入されている環境では、これらの等価性テストが
+# ベクトル化実装(fastpath)と純実装の結果一致を検証する。
+# NumPy が無い環境ではスキップされ、コアは純実装で動く。
+
+
+def _pure_entropy(data):
+    """純実装エントロピー(原本の Counter 版)。"""
+    if not data:
+        return 0.0
+    import math
+    from collections import Counter
+    counts = Counter(data)
+    n = len(data)
+    return -sum((v / n) * math.log2(v / n) for v in counts.values())
+
+
+def _pure_entropy_map(data, page):
+    return [(o, _pure_entropy(data[o:o + page]), min(page, len(data) - o))
+            for o in range(0, len(data), page)]
+
+
+def _pure_diff_runs(a, b):
+    """純実装のラン列挙(併合前)。0x1000 チャンク走査でもランを
+    チャンク境界で分割しない仕様の参照実装。"""
+    runs = []
+    n = min(len(a), len(b))
+    off = 0
+    start = None
+    while off < n:
+        end = min(off + 0x1000, n)
+        if a[off:end] != b[off:end]:
+            for i in range(off, end):
+                if a[i] != b[i]:
+                    if start is None:
+                        start = i
+                elif start is not None:
+                    runs.append({"offset": start, "length": i - start,
+                                 "kind": "diff"})
+                    start = None
+        elif start is not None:
+            runs.append({"offset": start, "length": off - start,
+                         "kind": "diff"})
+            start = None
+        off = end
+    if start is not None:
+        runs.append({"offset": start, "length": n - start, "kind": "diff"})
+    if len(a) > len(b):
+        runs.append({"offset": n, "length": len(a) - n, "kind": "a-only"})
+    elif len(b) > len(a):
+        runs.append({"offset": n, "length": len(b) - n, "kind": "b-only"})
+    return runs
+
+
+def _pure_classify_pages(images, page):
+    """純実装のページ分類(原本の md5 版)。"""
+    hashes = [[hashlib.md5(img[o:o + page]).digest()
+               for o in range(0, len(img), page)] for img in images]
+    npages = min(len(h) for h in hashes)
+    out = []
+    for i in range(npages):
+        hs = [h[i] for h in hashes]
+        if all(x == hs[0] for x in hs):
+            label = "static"
+        elif len(hs) == 3 and hs[0] == hs[2]:
+            label = "flip"
+        elif len(hs) == 3 and hs[1] == hs[2]:
+            label = "settled"
+        else:
+            label = "volatile"
+        out.append((i * page, label))
+    return out
+
+
+def _pure_printable(data):
+    if not data:
+        return 0.0
+    n = sum(1 for b in data if 0x20 <= b <= 0x7e or b in (0x09, 0x0a, 0x0d))
+    return n / len(data)
+
+
+def _pure_page_class(chunk, cipher_entropy=7.0):
+    """純実装 page_class(原本の定義)。"""
+    ent = _pure_entropy(chunk)
+    if ent >= cipher_entropy:
+        kind = "cipher"
+    elif chunk.count(0) / len(chunk) >= ZERO_MIN:
+        kind = "zero"
+    elif sum(chunk.count(p) for p in _CODE_PATTERNS) / (len(chunk) / 256.0) \
+            >= CODE_DENSITY_MIN:
+        kind = "code"
+    elif _pure_printable(chunk) >= PRINTABLE_MIN:
+        kind = "strings"
+    else:
+        kind = "data"
+    return {"kind": kind, "entropy": ent}
+
+
+def test_fastpath_entropy_equivalence():
+    requires_numpy()
+    ok = True
+    for size, seed in ((0, 0), (1, 1), (7, 2), (0x1000, 3),
+                       (0x1000 * 3 + 123, 4), (0x2731, 5)):
+        data = rnd(size, seed) if size else b""
+        fe = _fp.shannon_entropy(data)
+        pe = _pure_entropy(data)
+        ok = ok and abs(fe - pe) < 1e-9
+        fm = _fp.entropy_map(data, 0x1000)
+        pm = _pure_entropy_map(data, 0x1000)
+        ok = ok and len(fm) == len(pm)
+        for (o1, e1, s1), (o2, e2, s2) in zip(fm, pm):
+            ok = ok and o1 == o2 and s1 == s2 and abs(e1 - e2) < 1e-9
+    check("test_fastpath_entropy_equivalence", ok)
+
+
+def test_fastpath_diff_runs_equivalence():
+    requires_numpy()
+    ok = True
+    cases = [
+        (b"", b""),
+        (b"abc", b"abc"),
+        (b"aaabbbccc", b"aaaXXXccc"),          # 中央1ラン
+        (b"\x00" * 10, b"\x00" * 10 + b"tail"),  # b-only
+        (b"head" + b"\x00" * 8, b"\x00" * 8),   # a-only
+        (rnd(0x2000, 10), rnd(0x2000, 11)),    # ページ跨ぎ
+        (rnd(0x1234, 12), rnd(0x2345, 13)),    # 長さ不一致+端数
+    ]
+    for a, b in cases:
+        ok = ok and _fp.diff_runs(a, b) == _pure_diff_runs(a, b)
+    # 高密度差分(多数の小ラン)での境界抽出
+    r = random.Random(99)
+    a = bytes(r.getrandbits(8) for _ in range(0x3000))
+    b = bytearray(a)
+    for i in range(0, 0x3000, 3):
+        b[i] ^= 0xFF
+    ok = ok and _fp.diff_runs(bytes(b[:0x2000]), a[:0x2000]) \
+        == _pure_diff_runs(bytes(b[:0x2000]), a[:0x2000])
+    check("test_fastpath_diff_runs_equivalence", ok)
+
+
+def test_fastpath_classify_pages_equivalence():
+    requires_numpy()
+    ok = True
+    base = rnd(0x3000, 20)
+    # 時点2=flip/settled が混在する3時点を作る
+    v2 = bytearray(base)
+    v3 = bytearray(base)
+    v2[0x1000:0x2000] = rnd(0x1000, 21)
+    v3[0x1000:0x2000] = v2[0x1000:0x2000]
+    v3[0x2000:0x2400] = rnd(0x400, 22)
+    v2 = bytes(v2)
+    v3 = v3[:0x2800]                      # 長さ不一致も含める
+    for imgs in ([base, v2, v3], [base, v2], [base[:0x1234], v2[:0x2500]]):
+        for page in (0x1000, 0x400):
+            ok = ok and _fp.classify_pages(imgs, page) \
+                == _pure_classify_pages(imgs, page)
+    check("test_fastpath_classify_pages_equivalence", ok)
+
+
+def test_fastpath_page_classifications_equivalence():
+    requires_numpy()
+    ok = True
+    # 各分類種を混在させたイメージ(zero/code/strings/cipher/data)
+    page = 0x1000
+    img = (b"\x00" * page + codepage(5) + stringspage(6)
+           + rnd(page, 23)
+           + bytes(range(0x40, 0x80)) * 32)   # data(低エントロピー・非コード)
+    img = img[:page * 5]
+    fast = _fp.page_classifications(
+        img, page, cipher_entropy=7.0, code_density_min=CODE_DENSITY_MIN,
+        printable_min=PRINTABLE_MIN, zero_min=ZERO_MIN,
+        patterns=_CODE_PATTERNS)
+    pure = [_pure_page_class(img[o:o + page]) for o in range(0, len(img), page)]
+    ok = ok and len(fast) == len(pure)
+    for f, p in zip(fast, pure):
+        ok = ok and f["kind"] == p["kind"] and abs(f["entropy"] - p["entropy"]) < 1e-9
+    # ページ境界を跨ぐパターンがカウントされないこと(窓除外の検証)
+    page = 0x10
+    img = b"\x90" * (page * 2)
+    img = (img[:page - 1] + b"\x48\x89" + img[page + 1:])   # 境界に跨ぐ
+    dens = _fp._page_code_densities(img, page, [page, page],
+                                   _CODE_PATTERNS)
+    ok = ok and float(dens.max()) == 0.0
+    # 純実装と同じく「ページ内に完全に含まれる窓」のみ数える
+    img2 = img[:page - 2] + b"\x48\x89" + img[page:]        # page0 内に収まる
+    dens2 = _fp._page_code_densities(img2, page, [page, page],
+                                     _CODE_PATTERNS)
+    pure_d = (img2[:page].count(b"\x48\x89")) / (page / 256.0)
+    ok = ok and abs(float(dens2[0]) - pure_d) < 1e-9
+    check("test_fastpath_page_classifications_equivalence", ok)
+
+
+def test_fastpath_printable_ratio_equivalence():
+    requires_numpy()
+    ok = True
+    for size, seed in ((0, 0), (1, 1), (0x1000, 30), (0x2731, 31)):
+        data = rnd(size, seed) if size else b""
+        ok = ok and _fp.printable_ratio(data) == _pure_printable(data)
+        # 境界値(0x20/0x7e/0x7f/0x09/0x0a/0x0d)を含むデータ
+    edge = bytes([0x09, 0x0a, 0x0d, 0x20, 0x7e, 0x7f, 0x1f, 0x00, 0x41])
+    ok = ok and _fp.printable_ratio(edge) == _pure_printable(edge)
+    ok = ok and printable_ratio(edge) == _pure_printable(edge)
+    check("test_fastpath_printable_ratio_equivalence", ok)
+
+
+def test_fastpath_dispatch_flag():
+    """HAVE_NUMPY フラグとディスパッチの一貫性(NumPy 無し環境のフォールバック)。"""
+    if HAVE_NUMPY:
+        # NumPy がある環境では全公開APIが fastpath 経由でも動く(他テストが担保)
+        check("test_fastpath_dispatch_flag", True)
+        return
+    # NumPy が無い環境: fastpath は RuntimeError、コアは純実装で動作
+    ok = True
+    for fn, args in ((_fp.shannon_entropy, (b"abc",)),
+                     (_fp.entropy_map, (b"abc", 0x1000)),
+                     (_fp.diff_runs, (b"a", b"b")),
+                     (_fp.classify_pages, ([b"a", b"b"], 0x1000)),
+                     (_fp.page_classifications, (b"abc", 0x1000)),
+                     (_fp.printable_ratio, (b"abc",))):
+        try:
+            fn(*args)
+            ok = False
+        except RuntimeError:
+            pass
+    ok = ok and shannon_entropy(b"aaaa") == 0.0
+    ok = ok and diff_runs(b"abc", b"abd") == [
+        {"offset": 2, "length": 1, "kind": "diff"}]
+    check("test_fastpath_dispatch_flag", ok)
+
+
 def main():
     test_strip_header()
     test_load_image_strips_header()
@@ -407,8 +658,27 @@ def main():
     test_pairs_cli_smoke()
     test_cli_smoke()
 
+    for name, fn in (
+            ("test_fastpath_entropy_equivalence",
+             test_fastpath_entropy_equivalence),
+            ("test_fastpath_diff_runs_equivalence",
+             test_fastpath_diff_runs_equivalence),
+            ("test_fastpath_classify_pages_equivalence",
+             test_fastpath_classify_pages_equivalence),
+            ("test_fastpath_page_classifications_equivalence",
+             test_fastpath_page_classifications_equivalence),
+            ("test_fastpath_printable_ratio_equivalence",
+             test_fastpath_printable_ratio_equivalence),
+            ("test_fastpath_dispatch_flag", test_fastpath_dispatch_flag)):
+        try:
+            fn()
+        except SkipTest as exc:
+            skip(name, str(exc))
+
     failed = [n for n, ok in RESULTS if not ok]
     print("\n%d/%d passed" % (len(RESULTS) - len(failed), len(RESULTS)))
+    if SKIPPED:
+        print("%d skipped (NumPy 等の任意依存が未導入)" % len(SKIPPED))
     return 1 if failed else 0
 
 

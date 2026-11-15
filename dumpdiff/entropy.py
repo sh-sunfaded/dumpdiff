@@ -4,11 +4,15 @@ from __future__ import annotations
 import math
 from collections import Counter
 
+from . import fastpath
+
 DEFAULT_PAGE = 0x1000
 
 
 def shannon_entropy(data: bytes) -> float:
     """バイト列のシャノンエントロピー(ビット/バイト、0.0〜8.0)。"""
+    if fastpath.HAVE_NUMPY:
+        return fastpath.shannon_entropy(data)
     if not data:
         return 0.0
     counts = Counter(data)
@@ -21,6 +25,8 @@ def entropy_map(data: bytes, page: int = DEFAULT_PAGE):
 
     返り値: [(offset, entropy, chunk_size), ...] (最終ページは端数になる)。
     """
+    if fastpath.HAVE_NUMPY:
+        return fastpath.entropy_map(data, page)
     out = []
     for off in range(0, len(data), page):
         chunk = data[off:off + page]
