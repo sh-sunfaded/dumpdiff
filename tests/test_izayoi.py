@@ -1,6 +1,6 @@
-"""dumpdiff テストスイート(合成データのみ・外部ダンプ不要)。
+"""izayoi テストスイート(合成データのみ・外部ダンプ不要)。
 
-使い方: PYTHONPATH=. python3 tests/test_dumpdiff.py
+使い方: PYTHONPATH=. python3 tests/test_izayoi.py
 """
 import hashlib
 import io
@@ -12,16 +12,16 @@ from contextlib import redirect_stdout
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from dumpdiff import (classify_pages, diff_runs, entropy_map,
+from izayoi import (classify_pages, diff_runs, entropy_map,
                       fingerprint, high_entropy_ranges, label_ranges,
                       load_image, shannon_entropy, strip_header, summarize)
-from dumpdiff import fastpath as _fp
-from dumpdiff.fastpath import HAVE_NUMPY
-from dumpdiff.pairs import (analyze_pairs, code_density, find_pairs,
+from izayoi import fastpath as _fp
+from izayoi.fastpath import HAVE_NUMPY
+from izayoi.pairs import (analyze_pairs, code_density, find_pairs,
                             page_class, printable_ratio, refine_with_diffs,
                             descriptor_suggestion, _CODE_PATTERNS,
                             CODE_DENSITY_MIN, PRINTABLE_MIN, ZERO_MIN)
-from dumpdiff.report import json_report, markdown_report
+from izayoi.report import json_report, markdown_report
 
 RESULTS = []
 SKIPPED = []
@@ -237,7 +237,7 @@ def test_reports():
             fh.write(img2)
         md = markdown_report([p1, p2], page=page)
         check("test_markdown_report",
-              "# dumpdiff レポート" in md and "## イメージ" in md
+              "# izayoi レポート" in md and "## イメージ" in md
               and "## ページ分類" in md and "flip" not in md)
         js = json_report([p1, p2], page=page)
         import json as _json
@@ -351,7 +351,7 @@ def test_analyze_pairs_and_report():
 
 
 def test_pairs_cli_smoke():
-    from dumpdiff import cli
+    from izayoi import cli
     page = 0x1000
     img1 = (b"\x00" * page) + rnd(page, 80)
     img2 = (b"\x00" * page) + codepage(5)
@@ -378,7 +378,7 @@ def test_pairs_cli_smoke():
 
 
 def test_cli_smoke():
-    from dumpdiff import cli
+    from izayoi import cli
     page = 0x1000
     img1 = (b"\x00" * page) + rnd(0x100, 40)
     img2 = (b"\x00" * page) + rnd(0x100, 41)

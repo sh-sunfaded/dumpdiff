@@ -1,6 +1,6 @@
-"""dumpdiff コマンドライン。
+"""izayoi コマンドライン。
 
-使い方: python -m dumpdiff.cli <cmd> ...
+使い方: python -m izayoi.cli <cmd> ...
 """
 from __future__ import annotations
 
@@ -113,7 +113,7 @@ def _cmd_report(args) -> int:
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(
-        prog="dumpdiff",
+        prog="izayoi",
         description="複数時点メモリダンプ比較ツールキット")
     sub = p.add_subparsers(dest="cmd", required=True)
 

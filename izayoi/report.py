@@ -86,7 +86,7 @@ def markdown_report(paths, page=DEFAULT_PAGE, merge_gap=16,
     """解析結果を1本のMarkdownレポートにする。"""
     info = collect(paths, page=page, merge_gap=merge_gap,
                    threshold=threshold, top=top)
-    lines = ["# dumpdiff レポート", ""]
+    lines = ["# izayoi レポート", ""]
 
     lines += ["## イメージ", "",
               "| 名前 | サイズ | md5 | 全体エントロピー |",

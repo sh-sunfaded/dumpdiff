@@ -1,4 +1,4 @@
-"""dumpdiff — 複数時点メモリダンプ比較ツールキット。
+"""izayoi — 複数時点メモリダンプ比較ツールキット。
 
 ページ単位のエントロピー分析、ダンプ間の差分ラン列挙、
 複数時点ダンプのページ分類(static/flip/settled/volatile)、
@@ -13,7 +13,7 @@ from .pairs import (analyze_pairs, code_density, descriptor_suggestion,
                     find_pairs, page_class, printable_ratio,
                     refine_with_diffs, zero_ratio)
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "analyze_pairs", "classify_pages", "code_density", "descriptor_suggestion",

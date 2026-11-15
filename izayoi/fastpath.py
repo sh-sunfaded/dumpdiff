@@ -1,5 +1,5 @@
 """
-dumpdiff.fastpath — 任意依存 (NumPy) による高速化レイヤ
+izayoi.fastpath — 任意依存 (NumPy) による高速化レイヤ
 
 コアは一貫して標準ライブラリのみで動作する。NumPy が導入されている
 環境ではホットパスが自動的にベクトル化実装に切り替わる。
@@ -40,7 +40,7 @@ except ImportError:  # pragma: no cover - 環境依存
 
 def _require_numpy() -> None:
     if _np is None:
-        raise RuntimeError("dumpdiff.fastpath requires numpy (not installed)")
+        raise RuntimeError("izayoi.fastpath requires numpy (not installed)")
 
 
 # ============================================================ ヒストグラム
