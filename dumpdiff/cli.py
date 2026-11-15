@@ -5,11 +5,14 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import sys
 
 from .diffruns import classify_pages, diff_runs, label_ranges, summarize
 from .entropy import high_entropy_ranges
 from .images import load_image
+from .pairs import analyze_pairs
 from .report import json_report, markdown_report
 
 
@@ -63,6 +66,33 @@ def _cmd_compare(args) -> int:
     return 0
 
 
+def _cmd_pairs(args) -> int:
+    names = [os.path.basename(p) for p in args.images]
+    images = [load_image(p) for p in args.images]
+    cands = analyze_pairs(
+        images, names, page=args.page, cipher_entropy=args.cipher_entropy,
+        entropy_gap=args.entropy_gap, merge_gap=args.merge_gap)
+    if args.json:
+        print(json.dumps(cands, indent=2, ensure_ascii=False))
+        return 0
+    if not cands:
+        print("暗文↔平文対候補なし")
+        return 0
+    print("%d 候補:" % len(cands))
+    for c in cands[:args.limit]:
+        print("0x%08x-0x%08x (%d pages, basis=%s)"
+              % (c["start"], c["end"], c["pages"], c["basis"]))
+        print("  cipher=%s (ent %.2f)  plain=%s (ent %.2f, %s)"
+              % (c["cipher_name"], c["cipher_entropy"],
+                 c["plain_name"], c["plain_entropy"], c["plain_kind"]))
+        print("  refined: 0x%08x-0x%08x"
+              % (c["refined_start"], c["refined_end"]))
+        print("  desc (推定): %s" % c["descriptor"])
+    if len(cands) > args.limit:
+        print("  ... ほか %d 候補" % (len(cands) - args.limit))
+    return 0
+
+
 def _cmd_report(args) -> int:
     if args.json:
         out = json_report(
@@ -107,6 +137,16 @@ def main(argv=None) -> int:
     sp.add_argument("--ranges", action="store_true",
                     help="ラベルごとの連続領域も表示")
     sp.set_defaults(func=_cmd_compare)
+
+    sp = sub.add_parser("pairs", help="暗文↔平文ページ対の推定(記述子形式で出力)")
+    sp.add_argument("images", nargs="+")
+    sp.add_argument("--page", type=_int, default=0x1000)
+    sp.add_argument("--cipher-entropy", type=float, default=7.0)
+    sp.add_argument("--entropy-gap", type=float, default=0.5)
+    sp.add_argument("--merge-gap", type=_int, default=16)
+    sp.add_argument("--json", action="store_true")
+    sp.add_argument("--limit", type=_int, default=20)
+    sp.set_defaults(func=_cmd_pairs)
 
     sp = sub.add_parser("report", help="Markdown/JSON レポート生成")
     sp.add_argument("images", nargs="+")
