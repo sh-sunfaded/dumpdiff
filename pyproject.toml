@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dumpdiff"
+version = "0.1.0"
+description = "Compare multiple snapshots of a process memory dump: page entropy, diff runs, and page classification (static/flip/settled/volatile)"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { file = "LICENSE" }
+keywords = ["memory-forensics", "reverse-engineering", "dump", "entropy", "diff"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[tool.setuptools]
+packages = ["dumpdiff"]
