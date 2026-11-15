@@ -1,9 +1,13 @@
-# dumpdiff — 複数時点メモリダンプ比較ツールキット
+# izayoi(十六夜)— 複数時点メモリダンプ比較ツールキット
 
 同一プロセスの**複数時点のメモリダンプ**を比較し、
 「どの領域が静的か・どこが一時的にだけ書き換わるか・どこが暗号化されているか」
 を割り出すツールキット。パッカー・DRM・マルウェア解析の
 **探索段階(暗号方式がまだ分からない時期)** を支援する。
+
+十六夜は満月の翌晩、もう一度現れるのをためらう月。
+**同じ対象を異なる時点で観測し、移ろいと不動を見分ける**
+本ツールの名。旧称 dumpdiff(v0.4.0 で改名)。
 
 標準ライブラリのみで動作する(NumPy は任意依存・導入すると
 ホットパスが自動的にベクトル化実装に切り替わる)。
@@ -59,10 +63,13 @@ flowchart LR
 ## インストール
 
 ```bash
-git clone https://github.com/sh-sunfaded/dumpdiff.git
-cd dumpdiff
-pip install .            # 標準ライブラリのみ
-pip install .[fast]      # NumPy による高速化も有効化
+pip install izayoi        # PyPI から
+pip install izayoi[fast]  # NumPy による高速化も有効化
+
+# ソースから
+git clone https://github.com/sh-sunfaded/Izayoi.git
+cd Izayoi
+pip install .
 ```
 
 Git からではなくソースツリーを直接使う場合は `PYTHONPATH=.` でも動作する。
@@ -71,27 +78,30 @@ Git からではなくソースツリーを直接使う場合は `PYTHONPATH=.` 
 
 ```bash
 # 高エントロピー領域(暗号・圧縮候補)の列挙
-python -m dumpdiff.cli entropy dump1.bin --threshold 7.0
+izayoi entropy dump1.bin --threshold 7.0
 
 # 2ダンプ間の差分ラン(16バイト以内の一致で隔てられたランを併合)
-python -m dumpdiff.cli diff dump1.bin v1d.bin --merge-gap 16 --min-length 8
+izayoi diff dump1.bin v1d.bin --merge-gap 16 --min-length 8
 
 # 3時点比較: static / flip / settled / volatile
-python -m dumpdiff.cli compare dump1.bin v1d.bin w1.bin --ranges
+izayoi compare dump1.bin v1d.bin w1.bin --ranges
 
 # 暗文↔平文対の推定(候補を記述子形式で出力)
-python -m dumpdiff.cli pairs dump1.bin v1d.bin
-python -m dumpdiff.cli pairs dump1.bin v1d.bin w1.bin --json
+izayoi pairs dump1.bin v1d.bin
+izayoi pairs dump1.bin v1d.bin w1.bin --json
 
 # レポート生成
-python -m dumpdiff.cli report dump1.bin v1d.bin w1.bin --out report.md
-python -m dumpdiff.cli report dump1.bin v1d.bin --json --out report.json
+izayoi report dump1.bin v1d.bin w1.bin --out report.md
+izayoi report dump1.bin v1d.bin --json --out report.json
 ```
+
+`pip install` 済みなら `izayoi` コマンドが、ソースツリーからは
+`python -m izayoi.cli <cmd> ...` でも動作する。
 
 ### Python API
 
 ```python
-from dumpdiff import load_image, classify_pages, diff_runs, high_entropy_ranges
+from izayoi import load_image, classify_pages, diff_runs, high_entropy_ranges
 
 img1, img2, img3 = (load_image(p) for p in ("dump1.bin", "v1d.bin", "w1.bin"))
 
@@ -123,7 +133,7 @@ for run in diff_runs(img1, img2, merge_gap=16):
 ## パフォーマンス (任意依存: NumPy)
 
 NumPy (`numpy>=1.26`・Python>=3.9) が導入されている環境では、
-ホットパスが自動的にベクトル化実装 (`dumpdiff.fastpath`) に
+ホットパスが自動的にベクトル化実装 (`izayoi.fastpath`) に
 切り替わる。コアは一貫して標準ライブラリのみで動作し、
 結果は等価(テストスイートの等価性検証で担保)。
 
@@ -141,7 +151,7 @@ diff ランの併合 (`merge_gap`)・`min_length` フィルタ、
 ## テスト
 
 ```bash
-PYTHONPATH=. python3 tests/test_dumpdiff.py    # 合成データのみ・外部ダンプ不要
+PYTHONPATH=. python3 tests/test_izayoi.py    # 合成データのみ・外部ダンプ不要
 ```
 
 NumPy 導入環境では上記に加えて fastpath の**等価性テスト**

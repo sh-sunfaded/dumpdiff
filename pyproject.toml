@@ -3,25 +3,35 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "dumpdiff"
-version = "0.3.0"
+name = "izayoi"
+version = "0.4.0"
 description = "Compare multiple snapshots of a process memory dump: page entropy, diff runs, page classification (static/flip/settled/volatile), and cipher/plain pair estimation"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 license = { file = "LICENSE" }
-keywords = ["memory-forensics", "reverse-engineering", "dump", "entropy", "diff"]
+authors = [{ name = "sh-sunfaded" }]
+keywords = ["memory-forensics", "reverse-engineering", "dump", "entropy", "analysis"]
 classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
     "Topic :: Security",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 
+[project.urls]
+Homepage = "https://github.com/sh-sunfaded/Izayoi"
+Repository = "https://github.com/sh-sunfaded/Izayoi"
+Issues = "https://github.com/sh-sunfaded/Izayoi/issues"
+
+[project.scripts]
+izayoi = "izayoi.cli:main"
+
 [project.optional-dependencies]
 # NumPy は任意依存(標準ライブラリのみでも全機能が動作する)。
-# 導入するとホットパスが自動でベクトル化実装に切り替わる
-# (numpy>=1.26 は Python>=3.9 必須。コアは 3.8 のまま動く)。
+# 導入するとホットパスが自動でベクトル化実装に切り替わる。
 fast = ["numpy>=1.26"]
 
 [tool.setuptools]
-packages = ["dumpdiff"]
+packages = ["izayoi"]
