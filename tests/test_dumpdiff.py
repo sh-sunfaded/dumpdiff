@@ -14,6 +14,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dumpdiff import (classify_pages, diff_runs, entropy_map,
                       fingerprint, high_entropy_ranges, label_ranges,
                       load_image, shannon_entropy, strip_header, summarize)
+from dumpdiff.pairs import (analyze_pairs, code_density, find_pairs,
+                            page_class, printable_ratio, refine_with_diffs,
+                            descriptor_suggestion)
 from dumpdiff.report import json_report, markdown_report
 
 RESULTS = []
@@ -28,6 +31,33 @@ def rnd(n, seed=0):
     """決定論的な一様バイト列(高エントロピーfixture)。"""
     r = random.Random(seed)
     return bytes(r.getrandbits(8) for _ in range(n))
+
+
+def codepage(seed=3):
+    """x86風パターンを高密度に含む低エントロピー領域。"""
+    r = random.Random(seed)
+    pats = [b"\x48\x89\x5d", b"\x48\x8b\x05", b"\x48\x83\xec",
+            b"\x0f\x1f\x44", b"\x85\xc0", b"\x55\x48\x89\xe5",
+            b"\x48\x8d\x4d", b"\x89\x55\xfc"]
+    parts = []
+    for _ in range(96):
+        parts.append(r.choice(pats)
+                     + bytes(r.getrandbits(8) for _ in range(r.getrandbits(4))))
+    data = b"".join(parts)
+    return (data + b"\x90" * 0x1000)[:0x1000]
+
+
+def stringspage(seed=4):
+    r = random.Random(seed)
+    words = [b"CreateFileW", b"LoadLibraryW", b"GetThreadContext",
+             b"WriteProcessMemory", b"NtQueryVirtualMemory"]
+    parts = []
+    total = 0
+    while total < 0x1000:
+        w = r.choice(words) + b"\x00"
+        parts.append(w)
+        total += len(w)
+    return b"".join(parts)[:0x1000]
 
 
 def test_strip_header():
@@ -196,6 +226,136 @@ def test_reports():
               and "classification" in d)
 
 
+def test_pairs_scores():
+    code = codepage()
+    plain_txt = stringspage()
+    check("test_code_density_high", code_density(code) >= 1.5)
+    check("test_code_density_low", code_density(rnd(0x1000, 5)) < 1.5)
+    check("test_printable_ratio",
+          printable_ratio(plain_txt) > 0.55
+          and 0.2 < printable_ratio(rnd(0x1000, 6)) < 0.5)
+    check("test_page_class_cipher",
+          page_class(rnd(0x1000, 7))["kind"] == "cipher")
+    check("test_page_class_zero",
+          page_class(b"\x00" * 0x1000)["kind"] == "zero")
+    check("test_page_class_code", page_class(code)["kind"] == "code")
+    check("test_page_class_strings",
+          page_class(plain_txt)["kind"] == "strings")
+
+
+def test_find_pairs_two():
+    page = 0x1000
+    img1 = (b"\x00" * page) + rnd(page, 50)
+    img2 = (b"\x00" * page) + codepage()
+    cands = find_pairs([img1, img2])
+    check("test_find_pairs_two",
+          len(cands) == 1 and cands[0]["start"] == page
+          and cands[0]["cipher"] == 0 and cands[0]["plain"] == 1
+          and cands[0]["plain_kind"] == "code"
+          and cands[0]["basis"] == "score")
+    check("test_find_pairs_none",
+          find_pairs([img1, (b"\x00" * page) + rnd(page, 51)]) == [])
+
+
+def test_find_pairs_merge():
+    page = 0x1000
+    img1 = (b"\x00" * page) + rnd(page, 52) + rnd(page, 53)
+    img2 = (b"\x00" * page) + codepage(1) + codepage(2)
+    cands = find_pairs([img1, img2])
+    check("test_find_pairs_merge",
+          len(cands) == 1 and cands[0]["start"] == page
+          and cands[0]["end"] == 3 * page and cands[0]["pages"] == 2)
+
+
+def test_find_pairs_three_flip():
+    page = 0x1000
+    cipher_state = rnd(page, 60)
+    img1 = (b"\x00" * page) + cipher_state + (b"\x00" * page)
+    img2 = (b"\x00" * page) + codepage(3) + (b"\x00" * page)
+    img3 = (b"\x00" * page) + cipher_state + (b"\x00" * page)
+    cands = find_pairs([img1, img2, img3])
+    check("test_find_pairs_three_flip",
+          len(cands) == 1 and cands[0]["basis"] == "flip"
+          and cands[0]["cipher"] == 0 and cands[0]["plain"] == 1
+          and cands[0]["plain_kind"] == "code")
+    # 平文側が zero の flip は対象外
+    img2z = (b"\x00" * page) + (b"\x00" * page) + (b"\x00" * page)
+    check("test_find_pairs_flip_zero_skipped",
+          find_pairs([img1, img2z, img3]) == [])
+
+
+def test_refine_and_descriptor():
+    img1 = b"\x00" * 0x2000
+    img2 = (b"\x00" * 0x1234 + b"\x11" * 0x2cc
+            + b"\x00" * (0x2000 - 0x1500))
+    cand = {"start": 0x1000, "end": 0x2000, "cipher": 0, "plain": 1}
+    refine_with_diffs(cand, [img1, img2])
+    check("test_refine_with_diffs",
+          cand["refined_start"] == 0x1234
+          and cand["refined_end"] == 0x1500)
+    check("test_descriptor_suggestion",
+          descriptor_suggestion(cand)
+          == "0x1234:0x2cc:0x1234:0x2cc")
+    cand2 = {"start": 0x1000, "end": 0x2000, "cipher": 0, "plain": 1}
+    refine_with_diffs(cand2, [img1, img1])
+    check("test_refine_no_diff_keeps_range",
+          cand2["refined_start"] == 0x1000
+          and cand2["refined_end"] == 0x2000)
+
+
+def test_analyze_pairs_and_report():
+    page = 0x1000
+    img1 = (b"\x00" * page) + rnd(page, 70)
+    img2 = (b"\x00" * page) + codepage(4)
+    cands = analyze_pairs([img1, img2], ["dump1.bin", "v1d.bin"])
+    check("test_analyze_pairs",
+          len(cands) == 1 and cands[0]["cipher_name"] == "dump1.bin"
+          and cands[0]["plain_name"] == "v1d.bin"
+          and cands[0]["descriptor"].startswith("0x1000:"))
+    with tempfile.TemporaryDirectory() as td:
+        p1 = os.path.join(td, "dump1.bin")
+        p2 = os.path.join(td, "v1d.bin")
+        with open(p1, "wb") as fh:
+            fh.write(img1)
+        with open(p2, "wb") as fh:
+            fh.write(img2)
+        md = markdown_report([p1, p2], page=page)
+        check("test_markdown_report_pairs",
+              "## 暗文↔平文対候補" in md and "desc (推定)" in md)
+        import json as _json
+        d = _json.loads(json_report([p1, p2], page=page))
+        check("test_json_report_pairs",
+              len(d["pairs"]) == 1
+              and d["pairs"][0]["plain_kind"] == "code")
+
+
+def test_pairs_cli_smoke():
+    from dumpdiff import cli
+    page = 0x1000
+    img1 = (b"\x00" * page) + rnd(page, 80)
+    img2 = (b"\x00" * page) + codepage(5)
+    with tempfile.TemporaryDirectory() as td:
+        p1 = os.path.join(td, "dump1.bin")
+        p2 = os.path.join(td, "v1d.bin")
+        with open(p1, "wb") as fh:
+            fh.write(img1)
+        with open(p2, "wb") as fh:
+            fh.write(img2)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = cli.main(["pairs", p1, p2])
+        out = buf.getvalue()
+        check("test_cli_pairs_smoke",
+              rc == 0 and "1 候補" in out and "desc (推定)" in out)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = cli.main(["pairs", p1, p2, "--json"])
+        import json as _json
+        d = _json.loads(buf.getvalue())
+        check("test_cli_pairs_json", rc == 0 and len(d) == 1
+              and d[0]["descriptor"])
+
+
 def test_cli_smoke():
     from dumpdiff import cli
     page = 0x1000
@@ -238,6 +398,13 @@ def main():
     test_classify_pages_two_and_errors()
     test_summarize_and_ranges()
     test_reports()
+    test_pairs_scores()
+    test_find_pairs_two()
+    test_find_pairs_merge()
+    test_find_pairs_three_flip()
+    test_refine_and_descriptor()
+    test_analyze_pairs_and_report()
+    test_pairs_cli_smoke()
     test_cli_smoke()
 
     failed = [n for n, ok in RESULTS if not ok]

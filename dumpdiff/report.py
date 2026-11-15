@@ -7,6 +7,7 @@ import os
 from .diffruns import classify_pages, diff_runs, label_ranges, summarize
 from .entropy import high_entropy_ranges
 from .images import fingerprint, load_image
+from .pairs import analyze_pairs
 
 DEFAULT_PAGE = 0x1000
 
@@ -60,6 +61,19 @@ def collect(paths, page=DEFAULT_PAGE, merge_gap=16, threshold=7.0, top=10):
             "ranges": {k: [list(r) for r in v]
                        for k, v in label_ranges(items, page).items()},
         }
+
+    if 2 <= len(images) <= 3:
+        cands = analyze_pairs(images, names, page=page)
+        info["pairs"] = [
+            {"start": c["start"], "end": c["end"], "pages": c["pages"],
+             "basis": c["basis"],
+             "cipher": c["cipher_name"], "cipher_entropy": c["cipher_entropy"],
+             "plain": c["plain_name"], "plain_entropy": c["plain_entropy"],
+             "plain_kind": c["plain_kind"],
+             "refined_start": c["refined_start"],
+             "refined_end": c["refined_end"],
+             "descriptor": c["descriptor"]}
+            for c in cands]
     return info
 
 
@@ -112,6 +126,21 @@ def markdown_report(paths, page=DEFAULT_PAGE, merge_gap=16,
             for s, e in ranges[:top]:
                 lines.append("- `0x%08x`-`0x%08x` (%d bytes)"
                              % (s, e, e - s))
+            lines.append("")
+
+    for key in ("pairs",):
+        if info.get(key):
+            lines += ["## 暗文↔平文対候補", ""]
+            for c in info[key]:
+                lines.append(
+                    "- `0x%08x`-`0x%08x` (%d pages, %s): "
+                    "cipher=`%s` (ent %.2f) / plain=`%s` (ent %.2f, %s)"
+                    % (c["start"], c["end"], c["pages"], c["basis"],
+                       c["cipher"], c["cipher_entropy"],
+                       c["plain"], c["plain_entropy"], c["plain_kind"]))
+                lines.append("  - refined: `0x%08x`-`0x%08x`"
+                             % (c["refined_start"], c["refined_end"]))
+                lines.append("  - desc (推定): `%s`" % c["descriptor"])
             lines.append("")
 
     return "\n".join(lines)

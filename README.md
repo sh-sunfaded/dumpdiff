@@ -27,6 +27,7 @@ flowchart LR
 | `entropy` | ページ単位のエントロピーマップと高エントロピー領域(暗号・圧縮候補)の列挙 |
 | `diff` | 2ダンプ間の差分「ラン」(連続不一致領域)の列挙・併合・最小長フィルタ |
 | `compare` | 2〜3時点ダンプのページ分類 (`--ranges` で連続領域も表示) |
+| `pairs` | 暗文↔平文ページ対の推定。候補を展開エンジンの記述子形式で出力 |
 | `report` | 上記全体を1本のMarkdown/JSONレポートに |
 
 ### ページ分類ラベル(3時点)
@@ -39,6 +40,20 @@ flowchart LR
 | `volatile` | それ以外(全不一致含む) | 状態書込・ヒープ等 |
 
 2イメージ比較では `static` / `volatile` のみを返す。
+
+### 暗文↔平文対の推定 (`pairs`)
+
+「一方のダンプでは暗号化され、他方では平文に展開されている」領域を
+ページ単位のスコアから推定する:
+
+- **2イメージ**: 一方が `cipher` (エントロピー >= 7.0) で他方が
+  `code` (x86 風パターン密度) / `strings` (印刷可能文字比率)、
+  かつエントロピー差 >= 0.5 のページを候補にする
+- **3イメージ**: `compare` の `flip` ページを候補にし、
+  2 状態のエントロピー比較で暗文側/平文側を決める
+- 候補範囲はダンプ間の差分ランで境界精密化 (`refined`)
+- 候補は展開エンジンの記述子形式 `off1:size1:off2:size2` で出力される
+  (**サイズは範囲からの推定値**。展開エンジン側で調整すること)
 
 ## インストール
 
@@ -61,6 +76,10 @@ python -m dumpdiff.cli diff dump1.bin v1d.bin --merge-gap 16 --min-length 8
 
 # 3時点比較: static / flip / settled / volatile
 python -m dumpdiff.cli compare dump1.bin v1d.bin w1.bin --ranges
+
+# 暗文↔平文対の推定(候補を記述子形式で出力)
+python -m dumpdiff.cli pairs dump1.bin v1d.bin
+python -m dumpdiff.cli pairs dump1.bin v1d.bin w1.bin --json
 
 # レポート生成
 python -m dumpdiff.cli report dump1.bin v1d.bin w1.bin --out report.md
@@ -97,14 +116,16 @@ for run in diff_runs(img1, img2, merge_gap=16):
 - ヒープなどダンプ外に実体があるデータの復元は対象外
 - `flip`/`settled` はあくまで候補の列挙であり、意味の確定は
   平文側の内容(x86コードらしさ等)を別途確認すること
+- `pairs` の記述子のサイズは推定値(起点は信頼度高・サイズは要調整)
 
 ## テスト
 
 ```bash
-PYTHONPATH=. python3 tests/test_dumpdiff.py    # 28チェック・合成データのみ
+PYTHONPATH=. python3 tests/test_dumpdiff.py    # 合成データのみ・外部ダンプ不要
 ```
 
 ## 今後の予定
 
-- `pairs`: エントロピー差と差分率のパターンから暗文↔平文ページ対を推定し、
-  展開エンジン側の記述子形式で直接出力する(v0.2)
+- `pairs` 推定精度の改良(コードスコアのチューニング・候補と
+  展開エンジン(Toka等)との往復検証の整備)
+
