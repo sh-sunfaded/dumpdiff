@@ -67,7 +67,7 @@ pip install izayoi        # PyPI から
 pip install izayoi[fast]  # NumPy による高速化も有効化
 
 # ソースから
-git clone https://github.com/sh-sunfaded/Izayoi.git
+git clone https://github.com/sh-sunfaded/i zayoi.git
 cd Izayoi
 pip install .
 ```
