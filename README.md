@@ -28,6 +28,7 @@ flowchart LR
     D --> R[diff / entropy<br/>境界の当たり付け]
     P & E & R --> N[ブロック境界と記述子の特定]
     N --> T["展開エンジン側へ引き渡す<br/>(例: Toka の decrypt-block)"]
+    T --> SK["sekka lookup<br/>(展開後イメージの関数表引き・ハンドラ特定)"]
 ```
 
 ## コマンド
@@ -123,6 +124,9 @@ izayoi pairs dump1.bin v1d.bin w1.bin --json
 # レポート生成
 izayoi report dump1.bin v1d.bin w1.bin --out report.md
 izayoi report dump1.bin v1d.bin --json --out report.json
+
+# バージョン確認
+izayoi --version
 ```
 
 `pip install` 済みなら `izayoi` コマンドが、ソースツリーからは
@@ -154,6 +158,13 @@ info = triage(["dump1.bin", "v1d.bin"])
 for r in info["readable"]:
     print(hex(r["start"]), r["source"], r["kind"])
 ```
+
+## 関連ツール
+
+同じメモリフォレンジックの流れで併用できる姉妹ツール:
+
+- [Toka](https://github.com/sh-sunfaded/Toka) — パッカー/VMで保護されたブロックの復号・展開。`pairs` が出力する記述子 `off1:size1:off2:size2` は Toka の `--desc` にそのまま渡せる
+- [Sekka](https://github.com/sh-sunfaded/Sekka) — x64 PE 例外テーブル(.pdata)の静的解析。展開後の平文イメージから関数境界・例外ハンドラを引ける
 
 ## 入力形式
 
