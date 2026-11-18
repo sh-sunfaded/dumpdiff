@@ -9,6 +9,8 @@ import json
 import os
 import sys
 
+from . import __version__
+
 from .diffruns import classify_pages, diff_runs, label_ranges, summarize
 from .entropy import high_entropy_ranges
 from .images import load_image
@@ -123,8 +125,10 @@ def _cmd_triage(args) -> int:
                      "" if pe["coverage"] is None
                      else " / カバレッジ: %.0f%%" % (pe["coverage"] * 100)))
         c = im["census"]
-        print("  ページ: " + " / ".join("%s %d" % (k, c[k])
-                                        for k in c) if c else "  ページ: なし")
+        if c:
+            print("  ページ: " + " / ".join("%s %d" % (k, c[k]) for k in c))
+        else:
+            print("  ページ: なし")
     if "readable" in info:
         print("読みやすい資産の分布 (上位 %d):" % args.limit)
         for r in info["readable"][:args.limit]:
@@ -161,6 +165,8 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(
         prog="izayoi",
         description="複数時点メモリダンプ比較ツールキット")
+    p.add_argument("--version", action="version",
+                   version="%(prog)s " + __version__)
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("entropy", help="ページ単位エントロピーと高エントロピー領域")
