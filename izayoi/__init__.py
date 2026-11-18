@@ -16,7 +16,7 @@ from .pairs import (analyze_pairs, code_density, descriptor_suggestion,
 from .triage import (detect_pe, page_census, readability_ranking,
                      readable_sources, region_info, triage, triage_images)
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 __all__ = [
     "analyze_pairs", "classify_pages", "code_density", "detect_pe",

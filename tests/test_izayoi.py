@@ -408,6 +408,17 @@ def test_cli_smoke():
               rc == 0 and os.path.exists(os.path.join(td, "r.md")))
 
 
+def test_cli_version():
+    from izayoi import cli, __version__
+    buf = io.StringIO()
+    try:
+        with redirect_stdout(buf):
+            cli.main(["--version"])
+    except SystemExit:
+        pass
+    check("test_cli_version", __version__ in buf.getvalue())
+
+
 def datapage():
     """低エントロピーだが code/strings/zero ではないページ。"""
     return (bytes(range(0x40, 0x80)) * 32)[:0x1000]
@@ -856,6 +867,7 @@ def main():
     test_analyze_pairs_and_report()
     test_pairs_cli_smoke()
     test_cli_smoke()
+    test_cli_version()
     test_region_info()
     test_detect_pe()
     test_page_census()
