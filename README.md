@@ -5,6 +5,10 @@
 を割り出すツールキット。パッカー・DRM・マルウェア解析の
 **探索段階(暗号方式がまだ分からない時期)** を支援する。
 
+さらに **triage** コマンドで「手元のダンプ群をまず何を見るべきか」
+に答える初動鑑定(PEヘッダ検出・ページ分類の集計・
+「この領域はどのダンプで読むべきか」の推定)をワンステップで出力する。
+
 十六夜は満月の翌晩、もう一度現れるのをためらう月。
 **同じ対象を異なる時点で観測し、移ろいと不動を見分ける**
 本ツールの名。旧称 dumpdiff(v0.4.0 で改名)。
@@ -17,7 +21,8 @@
 
 ```mermaid
 flowchart LR
-    D[複数時点ダンプ<br/>採取] --> C[compare<br/>ページ分類]
+    D[複数時点ダンプ<br/>採取] --> TR[triage<br/>初動鑑定]
+    TR -->|読むべきダンプ/領域| C[compare<br/>ページ分類]
     C -->|flip 領域| P[暗文↔平文 対の候補]
     C -->|static 高エントロピー| E[静的暗号領域]
     D --> R[diff / entropy<br/>境界の当たり付け]
@@ -29,11 +34,32 @@ flowchart LR
 
 | コマンド | 機能 |
 | --- | --- |
+| `triage` | 初動鑑定: PEヘッダ検出・REGION ヘッダ解析・ページ分類の集計・読みやすい資産(平文)の所在推定 |
 | `entropy` | ページ単位のエントロピーマップと高エントロピー領域(暗号・圧縮候補)の列挙 |
 | `diff` | 2ダンプ間の差分「ラン」(連続不一致領域)の列挙・併合・最小長フィルタ |
 | `compare` | 2〜3時点ダンプのページ分類 (`--ranges` で連続領域も表示) |
 | `pairs` | 暗文↔平文ページ対の推定。候補を展開エンジンの記述子形式で出力 |
-| `report` | 上記全体を1本のMarkdown/JSONレポートに |
+| `report` | 上記全体(トリアージ込み)を1本のMarkdown/JSONレポートに |
+
+### ダンプのトリアージ (`triage`)
+
+ダンプを初めて開くときに必要な「初動鑑定」をまとめて行う:
+
+- **PE ヘッダ検出** (`detect_pe`) — 先頭 4KB の窓から MZ/PE を探し、
+  PE32/PE32+ の機種・イメージベース・`SizeOfImage`・セクション表を読む。
+  セクション raw オフセットと RVA の一致から
+  **メモリキャプチャ(RVA==オフセット)かオンディスクファイルか**を判定し、
+  ダンプ長 vs `SizeOfImage` から**カバレッジ**(画像全体が採れているか)を出す
+- **REGION ヘッダ解析** (`region_info`) — 採取ツールが付ける
+  `REGION ... addr=... size=...` 行から採取条件を復元
+- **ページ分類の集計** (`page_census`) — 各ダンプの
+  cipher / zero / code / strings / data ページ数を一覧
+- **読みやすい資産の所在推定** (`readable_sources`) —
+  複数時点ダンプの同じページを見比べ、最も平文らしい状態
+  (code/strings > data > zero > cipher、同ランクなら低エントロピー優先)を
+  持つダンプを領域単位で選ぶ。**「この領域はどのダンプで読むべきか」の答え**
+- **資産ランキング** (`readability_ranking`) —
+  平文ページ数順にダンプを並べ、最初に読むべきダンプを提示
 
 ### ページ分類ラベル(3時点)
 
@@ -67,8 +93,8 @@ pip install izayoi        # PyPI から
 pip install izayoi[fast]  # NumPy による高速化も有効化
 
 # ソースから
-git clone https://github.com/sh-sunfaded/i zayoi.git
-cd Izayoi
+git clone https://github.com/sh-sunfaded/izayoi.git
+cd izayoi
 pip install .
 ```
 
@@ -77,6 +103,10 @@ Git からではなくソースツリーを直接使う場合は `PYTHONPATH=.` 
 ## 使用例
 
 ```bash
+# 初動鑑定: PE検出・ページ集計・「どのダンプでどこを読むべきか」
+izayoi triage dump1.bin v1d.bin w1.bin
+izayoi triage dump1.bin v1d.bin --json
+
 # 高エントロピー領域(暗号・圧縮候補)の列挙
 izayoi entropy dump1.bin --threshold 7.0
 
@@ -113,6 +143,16 @@ for off, label in classify_pages([img1, img2, img3]):
 # 差分ランからブロック境界を当たり付けする
 for run in diff_runs(img1, img2, merge_gap=16):
     print(hex(run["offset"]), run["length"], run["kind"])
+
+# 初動鑑定: PE検出と「この領域はどのダンプで読むべきか」
+from izayoi import detect_pe, triage
+
+pe = detect_pe(img1)
+print(pe["bitness"], pe["machine"], hex(pe["image_base"]))
+
+info = triage(["dump1.bin", "v1d.bin"])
+for r in info["readable"]:
+    print(hex(r["start"]), r["source"], r["kind"])
 ```
 
 ## 入力形式
@@ -143,6 +183,7 @@ NumPy (`numpy>=1.26`・Python>=3.9) が導入されている環境では、
 | `diff_runs` | `a != b` のバイトマスクからラン境界を `flatnonzero`/`diff` で一括抽出 |
 | `classify_pages` | ページごとの md5 掛り比較をやめ、フルページ範囲を 2D 化して一括バイト比較(md5 衝突も原理的に排除) |
 | `pairs` のページ分類 | ヒストグラム行列から entropy/zero/strings 比率を、2 バイト窓の `bincount` から code 密度を、それぞれページ軸でまとめて計算 |
+| `triage` のページ集計/資産分布 | `pairs` と同じ一括ページ分類を流用(新規のホットパスなし)。PE ヘッダ検出は数 KB の窓のみで元々軽量 |
 
 ベクトル化しない箇所(ラン数に対する後処理で元々軽量):
 diff ランの併合 (`merge_gap`)・`min_length` フィルタ、
@@ -162,4 +203,5 @@ NumPy 導入環境では上記に加えて fastpath の**等価性テスト**
 
 - `pairs` 推定精度の改良(コードスコアのチューニング・候補と
   展開エンジン(Toka等)との往復検証の整備)
+- `triage` の拡張(セクション単位の集計・ダンプ時系列の整列推定)
 

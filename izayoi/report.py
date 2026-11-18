@@ -6,8 +6,9 @@ import os
 
 from .diffruns import classify_pages, diff_runs, label_ranges, summarize
 from .entropy import high_entropy_ranges
-from .images import fingerprint, load_image
+from .images import fingerprint, strip_header
 from .pairs import analyze_pairs
+from .triage import triage_images
 
 DEFAULT_PAGE = 0x1000
 
@@ -24,7 +25,11 @@ def _fmt_ranges(ranges, limit=None):
 def collect(paths, page=DEFAULT_PAGE, merge_gap=16, threshold=7.0, top=10):
     """全解析結果を dict として収集する(JSON 出力の実体)。"""
     names = [os.path.basename(p) for p in paths]
-    images = [load_image(p) for p in paths]
+    raws = []
+    for p in paths:
+        with open(p, "rb") as fh:
+            raws.append(fh.read())
+    images = [strip_header(r) for r in raws]
 
     info = {
         "images": [{"name": n, **fingerprint(img)}
@@ -74,6 +79,8 @@ def collect(paths, page=DEFAULT_PAGE, merge_gap=16, threshold=7.0, top=10):
              "refined_end": c["refined_end"],
              "descriptor": c["descriptor"]}
             for c in cands]
+
+    info["triage"] = triage_images(raws, names, page=page)
     return info
 
 
@@ -87,6 +94,48 @@ def markdown_report(paths, page=DEFAULT_PAGE, merge_gap=16,
     info = collect(paths, page=page, merge_gap=merge_gap,
                    threshold=threshold, top=top)
     lines = ["# izayoi レポート", ""]
+
+    if info.get("triage"):
+        lines += ["## トリアージ", ""]
+        for im in info["triage"]["images"]:
+            lines.append("- `%s` (%d bytes, entropy %.2f)"
+                         % (im["name"], im["size"], im["entropy"]))
+            r = im["region"]
+            if r:
+                lines.append("  - REGION: `%s`" % r["text"])
+            pe = im["pe"]
+            if pe:
+                lines.append("  - PE: %s %s, base=0x%x, SizeOfImage=%s, "
+                             "layout=%s, カバレッジ=%s"
+                             % (pe["bitness"], pe["machine"],
+                                pe["image_base"],
+                                "0x%x" % pe["size_of_image"]
+                                if pe["size_of_image"] else "?",
+                                pe["layout"],
+                                "%.0f%%" % (pe["coverage"] * 100)
+                                if pe["coverage"] is not None else "?"))
+                lines.append("  - セクション: %s"
+                             % (", ".join(s["name"]
+                                          for s in pe["sections"]) or "-"))
+            c = im["census"]
+            lines.append("  - ページ: %s"
+                         % " / ".join("%s %d" % (k, c[k]) for k in c))
+        tr = info["triage"]
+        if "readable" in tr:
+            lines.append("")
+            lines.append("読みやすい資産の分布:")
+            for rr in tr["readable"][:top]:
+                lines.append("- `0x%08x`-`0x%08x` `%s` (%s, ent %.2f)"
+                             % (rr["start"], rr["end"], rr["source"],
+                                rr["kind"], rr["entropy"]))
+            lines.append("")
+            lines.append("資産ランキング:")
+            for rank, s in enumerate(tr["ranking"], 1):
+                lines.append("%d. `%s` plain=%d, data=%d, cipher=%d, zero=%d"
+                             % (rank, s["name"], s["plain_pages"],
+                                s["data_pages"], s["cipher_pages"],
+                                s["zero_pages"]))
+        lines.append("")
 
     lines += ["## イメージ", "",
               "| 名前 | サイズ | md5 | 全体エントロピー |",
