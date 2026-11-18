@@ -6,6 +6,7 @@ import hashlib
 import io
 import os
 import random
+import struct
 import sys
 import tempfile
 from contextlib import redirect_stdout
@@ -22,6 +23,8 @@ from izayoi.pairs import (analyze_pairs, code_density, find_pairs,
                             descriptor_suggestion, _CODE_PATTERNS,
                             CODE_DENSITY_MIN, PRINTABLE_MIN, ZERO_MIN)
 from izayoi.report import json_report, markdown_report
+from izayoi.triage import (detect_pe, page_census, readability_ranking,
+                             readable_sources, region_info, triage)
 
 RESULTS = []
 SKIPPED = []
@@ -405,6 +408,202 @@ def test_cli_smoke():
               rc == 0 and os.path.exists(os.path.join(td, "r.md")))
 
 
+def datapage():
+    """低エントロピーだが code/strings/zero ではないページ。"""
+    return (bytes(range(0x40, 0x80)) * 32)[:0x1000]
+
+
+def pe_image(base=0x140000000, size_of_image=0x3000, nsec=2,
+             memory=True, pe32=False, total=0x2000):
+    """ヘッダだけの合成 PE イメージ(detect_pe 検証用)。
+
+    memory=True はセクション raw オフセット == RVA(メモリキャプチャ
+    レイアウト)、False はオンディスクファイルレイアウト。
+    total は返すバイト長(coverage 検証で調整する)。
+    """
+    hdr = bytearray(b"\x00" * 0x400)
+    hdr[0:2] = b"MZ"
+    struct.pack_into("<I", hdr, 0x3C, 0x40)
+    hdr[0x40:0x44] = b"PE\x00\x00"
+    struct.pack_into("<HHIIIHH", hdr, 0x44, 0x8664, nsec, 0, 0, 0, 0xF0,
+                     0x22)
+    opt = 0x40 + 24
+    if pe32:
+        struct.pack_into("<H", hdr, opt, 0x10B)
+        struct.pack_into("<I", hdr, opt + 28, base & 0xFFFFFFFF)
+    else:
+        struct.pack_into("<H", hdr, opt, 0x20B)
+        struct.pack_into("<Q", hdr, opt + 24, base)
+    struct.pack_into("<I", hdr, opt + 56, size_of_image)
+    sec = opt + 0xF0
+    for i in range(nsec):
+        vaddr = 0x1000 * (i + 1)
+        raw = vaddr if memory else 0x400 + 0x200 * i
+        struct.pack_into("<8sIIII", hdr, sec + 40 * i, b".sec%d" % i,
+                         0x1000, vaddr, 0x1000, raw)
+    return bytes(hdr) + b"\x00" * max(0, total - 0x400)
+
+
+# ============================================================ triage(初動鑑定)
+
+def test_region_info():
+    hdr = b"REGION image addr=0x140000000 size=688128\r\n" + b"MZ\x90\x00"
+    r = region_info(hdr)
+    check("test_region_info",
+          r is not None and r["addr"] == 0x140000000
+          and r["size"] == 688128
+          and r["text"] == "image addr=0x140000000 size=688128")
+    r2 = region_info(b"REGION image addr=512 size=10\n" + b"\x00")
+    check("test_region_info_decimal", r2["addr"] == 512 and r2["size"] == 10)
+    check("test_region_info_none", region_info(b"MZ\x00\x01") is None)
+
+
+def test_detect_pe():
+    d = detect_pe(pe_image())
+    check("test_detect_pe_basic",
+          d is not None and d["offset"] == 0 and d["bitness"] == "PE32+"
+          and d["machine"] == "x86-64" and d["machine_code"] == 0x8664
+          and d["image_base"] == 0x140000000
+          and d["size_of_image"] == 0x3000
+          and [s["name"] for s in d["sections"]] == [".sec0", ".sec1"]
+          and d["sections"][0]["vaddr"] == 0x1000)
+    check("test_detect_pe_memory_layout", d["layout"] == "memory")
+    check("test_detect_pe_coverage_partial",
+          abs(d["coverage"] - 0x2000 / 0x3000) < 1e-9
+          and d["full"] is False)
+    check("test_detect_pe_layout_file",
+          detect_pe(pe_image(memory=False))["layout"] == "file")
+    d32 = detect_pe(pe_image(pe32=True, base=0x400000))
+    check("test_detect_pe_pe32",
+          d32 is not None and d32["bitness"] == "PE32"
+          and d32["image_base"] == 0x400000)
+    check("test_detect_pe_full",
+          detect_pe(pe_image(total=0x3000))["full"] is True)
+    check("test_detect_pe_absent", detect_pe(rnd(0x1000, 90)) is None)
+    bad = bytearray(pe_image())
+    struct.pack_into("<I", bad, 0x3C, 0x100000)     # e_lfanew が異常
+    check("test_detect_pe_bad_lfanew", detect_pe(bytes(bad)) is None)
+    bad2 = bytearray(pe_image())
+    bad2[0x40:0x44] = b"XX\x00\x00"                  # PE シグネチャ不在
+    check("test_detect_pe_no_sig", detect_pe(bytes(bad2)) is None)
+    # MZ が直後にあるだけ(ヘッダとして不完全)なデータは弾く
+    check("test_detect_pe_junk_mz", detect_pe(b"MZ" + rnd(0x100, 91)) is None)
+
+
+def test_page_census():
+    page = 0x1000
+    img = (b"\x00" * page + codepage() + stringspage() + rnd(page, 92))
+    cens = page_census([img])
+    check("test_page_census",
+          cens == [{"zero": 1, "code": 1, "strings": 1, "cipher": 1}])
+    two = page_census([img, b"\x00" * page * 4])
+    check("test_page_census_multi",
+          two[1] == {"zero": 4} and two[0]["cipher"] == 1)
+
+
+def test_readable_sources():
+    page = 0x1000
+    img1 = (rnd(page, 100) + b"\x00" * page + codepage(2)
+            + b"\x00" * page)
+    img2 = (codepage(1) + b"\x00" * page + datapage() + rnd(page, 101))
+    rs = readable_sources([img1, img2])
+    check("test_readable_sources",
+          rs == [
+              {"start": 0, "end": page, "source": 1, "kind": "code",
+               "entropy": rs[0]["entropy"]},
+              {"start": page, "end": 2 * page, "source": 0, "kind": "zero",
+               "entropy": rs[1]["entropy"]},
+              {"start": 2 * page, "end": 3 * page, "source": 0,
+               "kind": "code", "entropy": rs[2]["entropy"]},
+              {"start": 3 * page, "end": 4 * page, "source": 0,
+               "kind": "zero", "entropy": rs[3]["entropy"]},
+          ] and rs[0]["entropy"] > 0)
+    # 同条件が続くページは 1 本に併合される
+    a = b"\x00" * page * 2 + rnd(page, 102) + b"\x00" * page
+    b = rnd(page, 103) + rnd(page, 104) + b"\x00" * page + rnd(page, 105)
+    rs2 = readable_sources([a, b])
+    check("test_readable_sources_merge",
+          rs2[0]["start"] == 0 and rs2[0]["end"] == 2 * page
+          and rs2[0]["source"] == 0 and rs2[0]["kind"] == "zero"
+          and rs2[1]["start"] == 2 * page and rs2[1]["source"] == 1
+          and rs2[2]["start"] == 3 * page and rs2[2]["source"] == 0)
+    try:
+        readable_sources([img1])
+        check("test_readable_sources_needs_two", False)
+    except ValueError:
+        check("test_readable_sources_needs_two", True)
+
+
+def test_readability_ranking():
+    page = 0x1000
+    mostly_cipher = rnd(page * 4, 110) + b"\x00" * page
+    mostly_plain = codepage(1) + codepage(2) + stringspage() + \
+        datapage() + b"\x00" * page
+    rank = readability_ranking([mostly_cipher, mostly_plain])
+    check("test_readability_ranking",
+          [s["index"] for s in rank] == [1, 0]
+          and rank[0]["plain_pages"] == 3 and rank[1]["plain_pages"] == 0
+          and rank[1]["cipher_pages"] == 4)
+
+
+def test_triage_report_and_cli():
+    from izayoi import cli
+    page = 0x1000
+    p1_data = pe_image(total=0x1000) + b"\x00" * page
+    p2_data = codepage() + rnd(page, 120)
+    with tempfile.TemporaryDirectory() as td:
+        p1 = os.path.join(td, "dump1.bin")
+        p2 = os.path.join(td, "v1d.bin")
+        with open(p1, "wb") as fh:
+            fh.write(b"REGION image addr=0x140000000 size=8192\r\n"
+                     + p1_data)
+        with open(p2, "wb") as fh:
+            fh.write(p2_data)
+        info = triage([p1, p2])
+        im0, im1 = info["images"]
+        check("test_triage_region",
+              im0["region"] is not None
+              and im0["region"]["addr"] == 0x140000000
+              and im1["region"] is None)
+        check("test_triage_pe",
+              im0["pe"] is not None
+              and im0["pe"]["image_base"] == 0x140000000
+              and im1["pe"] is None)
+        check("test_triage_census",
+              im0["census"].get("zero", 0) >= 1
+              and im1["census"].get("code", 0) == 1
+              and im1["census"].get("cipher", 0) == 1)
+        check("test_triage_readable",
+              info["readable"][0]["source"] == "v1d.bin"
+              and info["readable"][0]["kind"] == "code")
+        check("test_triage_ranking",
+              info["ranking"][0]["name"] == "v1d.bin"
+              and info["ranking"][0]["plain_pages"] == 1)
+        md = markdown_report([p1, p2])
+        check("test_markdown_report_triage",
+              "## トリアージ" in md and "読みやすい資産の分布" in md
+              and "資産ランキング" in md)
+        import json as _json
+        js = _json.loads(json_report([p1, p2]))
+        check("test_json_report_triage",
+              js["triage"]["images"][0]["pe"]["image_base"]
+              == 0x140000000)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = cli.main(["triage", p1, p2])
+        out = buf.getvalue()
+        check("test_cli_triage_smoke",
+              rc == 0 and "トリアージ" in out and "PE:" in out
+              and "REGION:" in out and "資産ランキング" in out)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = cli.main(["triage", p1, p2, "--json"])
+        d = _json.loads(buf.getvalue())
+        check("test_cli_triage_json",
+              rc == 0 and len(d["images"]) == 2
+              and d["readable"][0]["source"] == "v1d.bin")
+
+
 # ============================================================ fastpath(NumPy)
 # NumPy が導入されている環境では、これらの等価性テストが
 # ベクトル化実装(fastpath)と純実装の結果一致を検証する。
@@ -657,6 +856,12 @@ def main():
     test_analyze_pairs_and_report()
     test_pairs_cli_smoke()
     test_cli_smoke()
+    test_region_info()
+    test_detect_pe()
+    test_page_census()
+    test_readable_sources()
+    test_readability_ranking()
+    test_triage_report_and_cli()
 
     for name, fn in (
             ("test_fastpath_entropy_equivalence",

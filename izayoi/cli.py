@@ -14,6 +14,7 @@ from .entropy import high_entropy_ranges
 from .images import load_image
 from .pairs import analyze_pairs
 from .report import json_report, markdown_report
+from .triage import triage
 
 
 def _int(s: str) -> int:
@@ -93,6 +94,51 @@ def _cmd_pairs(args) -> int:
     return 0
 
 
+def _cmd_triage(args) -> int:
+    info = triage(args.images, page=args.page,
+                  cipher_entropy=args.cipher_entropy)
+    if args.json:
+        print(json.dumps(info, indent=2, ensure_ascii=False))
+        return 0
+    print("トリアージ: %d イメージ (page=0x%x):"
+          % (len(info["images"]), args.page))
+    for im in info["images"]:
+        print("%s: %d bytes  entropy=%.2f"
+              % (im["name"], im["size"], im["entropy"]))
+        if im["region"]:
+            r = im["region"]
+            addr = " addr=0x%x" % r["addr"] if "addr" in r else ""
+            size = " size=%d" % r["size"] if "size" in r else ""
+            print("  REGION:%s%s (%s)" % (addr, size, r["text"]))
+        pe = im["pe"]
+        if pe:
+            secs = ", ".join(s["name"] for s in pe["sections"]) or "-"
+            print("  PE: %s %s @0x%x  image_base=0x%x  SizeOfImage=%s"
+                  % (pe["bitness"], pe["machine"], pe["offset"],
+                     pe["image_base"],
+                     "0x%x" % pe["size_of_image"] if pe["size_of_image"]
+                     else "?"))
+            print("    セクション: %s / レイアウト: %s%s"
+                  % (secs, pe["layout"],
+                     "" if pe["coverage"] is None
+                     else " / カバレッジ: %.0f%%" % (pe["coverage"] * 100)))
+        c = im["census"]
+        print("  ページ: " + " / ".join("%s %d" % (k, c[k])
+                                        for k in c) if c else "  ページ: なし")
+    if "readable" in info:
+        print("読みやすい資産の分布 (上位 %d):" % args.limit)
+        for r in info["readable"][:args.limit]:
+            print("  0x%08x-0x%08x  %-16s %s (ent %.2f)"
+                  % (r["start"], r["end"], r["source"], r["kind"],
+                     r["entropy"]))
+        print("資産ランキング (平文ページ数順):")
+        for rank, s in enumerate(info["ranking"], 1):
+            print("  %d. %-16s plain=%d  data=%d  cipher=%d  zero=%d"
+                  % (rank, s["name"], s["plain_pages"], s["data_pages"],
+                     s["cipher_pages"], s["zero_pages"]))
+    return 0
+
+
 def _cmd_report(args) -> int:
     if args.json:
         out = json_report(
@@ -147,6 +193,15 @@ def main(argv=None) -> int:
     sp.add_argument("--json", action="store_true")
     sp.add_argument("--limit", type=_int, default=20)
     sp.set_defaults(func=_cmd_pairs)
+
+    sp = sub.add_parser(
+        "triage", help="ダンプの初動鑑定(PE検出・ページ集計・読みやすい資産の所在)")
+    sp.add_argument("images", nargs="+")
+    sp.add_argument("--page", type=_int, default=0x1000)
+    sp.add_argument("--cipher-entropy", type=float, default=7.0)
+    sp.add_argument("--json", action="store_true")
+    sp.add_argument("--limit", type=_int, default=20)
+    sp.set_defaults(func=_cmd_triage)
 
     sp = sub.add_parser("report", help="Markdown/JSON レポート生成")
     sp.add_argument("images", nargs="+")
