@@ -201,6 +201,7 @@ def _page_code_densities(data: bytes, page: int, sizes, patterns):
     窓の全数え上げが一致する。ページ境界を跨ぐ窓は除外する
     (純実装はページスライス内で数えるため)。
     """
+    sizes = _np.asarray(sizes, dtype=_np.int64)
     n = len(data)
     npages = len(sizes)
     if npages == 0 or n < 2:
