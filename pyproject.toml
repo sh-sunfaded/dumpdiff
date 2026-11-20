@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "izayoi"
-version = "0.5.1"
+version = "0.5.2"
 description = "Compare multiple snapshots of a process memory dump: triage (PE detection, page census, readable-asset location), page entropy, diff runs, page classification (static/flip/settled/volatile), and cipher/plain pair estimation"
 readme = "README.md"
 requires-python = ">=3.9"
