@@ -30,7 +30,7 @@ izayoi = "izayoi.cli:main"
 
 [project.optional-dependencies]
 # NumPy は任意依存(標準ライブラリのみでも全機能が動作する)。
-# 導入するとホットパスが自動的にベクトル化実装に切り替わる。
+# 導入するとホットパスが自動でベクトル化実装に切り替わる。
 fast = ["numpy>=1.26"]
 
 [tool.setuptools]
